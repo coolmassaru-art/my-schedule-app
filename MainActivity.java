@@ -995,7 +995,18 @@ public class MainActivity extends Activity {
                 c.set(Calendar.DAY_OF_MONTH, day);
                 c.set(Calendar.HOUR_OF_DAY,0);
                 c.set(Calendar.MINUTE,0);
-                if (c.before(now)) c.add(Calendar.YEAR,1);
+                c.set(Calendar.SECOND,0);
+                c.set(Calendar.MILLISECOND,0);
+
+                // 같은 '오늘 날짜'를 현재 시각과 비교하면 자정(00:00)이 과거로 판단되어
+                // 다음 해로 넘어가던 문제를 방지합니다.
+                Calendar todayOnly = Calendar.getInstance();
+                todayOnly.set(Calendar.HOUR_OF_DAY,0);
+                todayOnly.set(Calendar.MINUTE,0);
+                todayOnly.set(Calendar.SECOND,0);
+                todayOnly.set(Calendar.MILLISECOND,0);
+
+                if (c.before(todayOnly)) c.add(Calendar.YEAR,1);
                 p.date = c.getTime();
             }
         }
