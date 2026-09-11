@@ -428,6 +428,13 @@ public class MainActivity extends Activity {
         String[] lines = clean.split("\\n");
         Calendar now = Calendar.getInstance();
 
+        ArrayList<String> usefulLines = new ArrayList<>();
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (isNoiseLine(line)) continue;
+            usefulLines.add(line);
+        }
+
         // 1) 제목: 카톡/문자에서 일정 안내 제목이나 일정 키워드가 있는 줄을 우선
         for (String raw : lines) {
             String line = raw.trim();
