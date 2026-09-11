@@ -7,12 +7,10 @@ import android.content.pm.PackageManager;
 import android.graphics.*;
 import android.net.Uri;
 import android.os.*;
-import android.provider.Settings;
 import android.view.*;
 import android.widget.*;
 
 import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
@@ -40,6 +38,7 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         requestNotificationPermission();
         loadEvents();
+        migrateAndScheduleExistingEvents();
         buildUi();
         handleShare(getIntent());
     }
@@ -81,7 +80,7 @@ public class MainActivity extends Activity {
         TextView title = tv("나만의 일정", 28, true);
         root.addView(title);
 
-        TextView sub = tv("카카오톡 메시지·스크린샷도 일정으로 바로 저장", 14, false);
+        TextView sub = tv("카카오톡·문자 메시지·스크린샷을 일정으로 바로 저장 · 기본 1시간 전 알림", 14, false);
         sub.setTextColor(Color.GRAY);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1,-2);
         sp.setMargins(0, dp(5),0,dp(12));
@@ -133,9 +132,7 @@ public class MainActivity extends Activity {
         ArrayList<Integer> indices = new ArrayList<>();
         for (int i=0; i<events.length(); i++) {
             JSONObject e = events.optJSONObject(i);
-            if (e != null && key(selected).equals(e.optString("date"))) {
-                indices.add(i);
-            }
+            if (e != null && key(selected).equals(e.optString("date"))) indices.add(i);
         }
 
         Collections.sort(indices, (a,b) ->
@@ -152,14 +149,12 @@ public class MainActivity extends Activity {
             card.setPadding(dp(14),dp(12),dp(14),dp(12));
             card.setBackgroundColor(Color.WHITE);
 
-            TextView t = tv(e.optString("title","일정"), 17, true);
-            card.addView(t);
+            card.addView(tv(e.optString("title","일정"), 17, true));
 
-            String meta = e.optString("time","") + " · "
-                + e.optString("category","개인");
-            if (e.optInt("reminderMin", 0) > 0) {
-                meta += " · " + e.optInt("reminderMin") + "분 전 알림";
-            }
+            String meta = e.optString("time","") + " · " + e.optString("category","개인");
+            int reminderMin = e.optInt("reminderMin", 60);
+            if (reminderMin > 0) meta += " · " + (reminderMin == 60 ? "1시간 전 알림" : reminderMin + "분 전 알림");
+
             TextView m = tv(meta, 13, false);
             m.setTextColor(Color.GRAY);
             card.addView(m);
@@ -181,7 +176,6 @@ public class MainActivity extends Activity {
             }
 
             card.setOnClickListener(v -> openEditor(e, "", new ArrayList<>(), true));
-
             card.setOnLongClickListener(v -> {
                 new AlertDialog.Builder(this)
                     .setTitle("일정 삭제")
@@ -233,7 +227,7 @@ public class MainActivity extends Activity {
         box.addView(dateBtn);
 
         EditText time = new EditText(this);
-        time.setHint("시간 예: 15:30");
+        time.setHint("시간 예: 16:00");
         box.addView(time);
 
         Spinner category = new Spinner(this);
@@ -246,6 +240,7 @@ public class MainActivity extends Activity {
         int[] reminderVals = {0,10,30,60,1440};
         reminder.setAdapter(new ArrayAdapter<>(this,
             android.R.layout.simple_spinner_dropdown_item, reminderLabels));
+        reminder.setSelection(3); // 새 일정은 항상 1시간 전 알림이 기본
         box.addView(reminder);
 
         EditText memo = new EditText(this);
@@ -270,7 +265,7 @@ public class MainActivity extends Activity {
             String cat = existing.optString("category","개인");
             for (int i=0;i<CATS.length;i++) if (CATS[i].equals(cat)) category.setSelection(i);
 
-            int rv = existing.optInt("reminderMin",0);
+            int rv = existing.optInt("reminderMin",60);
             for (int i=0;i<reminderVals.length;i++) if (reminderVals[i]==rv) reminder.setSelection(i);
 
             JSONArray a = existing.optJSONArray("images");
@@ -338,7 +333,6 @@ public class MainActivity extends Activity {
             int min = m.group(2)==null ? 0 : Integer.parseInt(m.group(2));
             return String.format(Locale.KOREA,"%02d:%02d",h,min);
         }
-        if (s.matches("\\d{1,2}:\\d{2}")) return s;
         return "09:00";
     }
 
@@ -374,7 +368,6 @@ public class MainActivity extends Activity {
                 String text = intent.getStringExtra(Intent.EXTRA_TEXT);
                 if (text == null) text = "";
                 openEditor(null, text, new ArrayList<>(), false);
-
             } else if (type.startsWith("image/")) {
                 Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
                 if (uri != null) {
@@ -428,54 +421,126 @@ public class MainActivity extends Activity {
     private ParsedSchedule parseScheduleText(String text) {
         ParsedSchedule p = new ParsedSchedule();
         if (text == null) text = "";
-        String clean = text.trim();
-
+        String clean = text.replace('\u00A0',' ').trim();
         String[] lines = clean.split("\\n");
-        for(String line: lines) {
-            String x = line.trim();
-            if (!x.isEmpty()) {
-                p.title = x.length() > 40 ? x.substring(0,40) : x;
+        Calendar now = Calendar.getInstance();
+
+        // 1) 제목: 카톡/문자에서 일정 안내 제목이나 일정 키워드가 있는 줄을 우선
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.matches("^\\[.+(일정|안내).+\\]$") || line.matches("^\\[.+(일정|안내)\\]$")) {
+                p.title = line.replaceAll("^\\[|\\]$", "").trim();
                 break;
             }
         }
-        if (p.title.isEmpty()) p.title = "카카오톡에서 가져온 일정";
+        if (p.title.isEmpty()) {
+            for (String raw : lines) {
+                String line = raw.trim();
+                if (isNoiseLine(line)) continue;
+                if (line.contains("게임") || line.contains("경기") || line.contains("훈련") ||
+                    line.contains("레슨") || line.contains("모임") || line.contains("예약") ||
+                    line.contains("병원") || line.contains("진료") || line.contains("방문") ||
+                    line.contains("상담") || line.contains("미팅") || line.contains("면접")) {
+                    p.title = line.length() > 40 ? line.substring(0,40) : line;
+                    break;
+                }
+            }
+        }
+        if (p.title.isEmpty()) p.title = "메시지 일정";
 
-        Calendar now = Calendar.getInstance();
-
-        if (clean.contains("내일")) {
-            Calendar c = Calendar.getInstance();
-            c.add(Calendar.DAY_OF_MONTH,1);
-            p.date = c.getTime();
-        } else if (clean.contains("모레")) {
+        // 2) 날짜: 9/12(토), 9/12, 9-12, 9.12, 9월 12일, 내일/모레
+        if (clean.contains("모레")) {
             Calendar c = Calendar.getInstance();
             c.add(Calendar.DAY_OF_MONTH,2);
             p.date = c.getTime();
+        } else if (clean.contains("내일")) {
+            Calendar c = Calendar.getInstance();
+            c.add(Calendar.DAY_OF_MONTH,1);
+            p.date = c.getTime();
         } else {
-            Matcher md = Pattern.compile("(\\d{1,2})\\s*월\\s*(\\d{1,2})\\s*일").matcher(clean);
-            if (md.find()) {
+            Matcher slash = Pattern.compile("(?<!\\d)(\\d{1,2})\\s*/\\s*(\\d{1,2})(?:\\s*\\([^)]*\\))?").matcher(clean);
+            Matcher korean = Pattern.compile("(\\d{1,2})\\s*월\\s*(\\d{1,2})\\s*일").matcher(clean);
+            Matcher dotted = Pattern.compile("(?<!\\d)(\\d{1,2})\\s*[.-]\\s*(\\d{1,2})(?!\\d)").matcher(clean);
+            int month = -1, day = -1;
+            if (slash.find()) {
+                month = Integer.parseInt(slash.group(1));
+                day = Integer.parseInt(slash.group(2));
+            } else if (korean.find()) {
+                month = Integer.parseInt(korean.group(1));
+                day = Integer.parseInt(korean.group(2));
+            } else if (dotted.find()) {
+                month = Integer.parseInt(dotted.group(1));
+                day = Integer.parseInt(dotted.group(2));
+            }
+            if (month > 0 && day > 0) {
                 Calendar c = Calendar.getInstance();
-                c.set(Calendar.MONTH, Integer.parseInt(md.group(1))-1);
-                c.set(Calendar.DAY_OF_MONTH, Integer.parseInt(md.group(2)));
+                c.set(Calendar.MONTH, month-1);
+                c.set(Calendar.DAY_OF_MONTH, day);
+                c.set(Calendar.HOUR_OF_DAY,0);
+                c.set(Calendar.MINUTE,0);
                 if (c.before(now)) c.add(Calendar.YEAR,1);
                 p.date = c.getTime();
             }
         }
 
-        Matcher t = Pattern.compile("(오전|오후)?\\s*(\\d{1,2})\\s*(?:시|:)\\s*(\\d{1,2})?\\s*분?").matcher(clean);
-        if (t.find()) {
-            int h = Integer.parseInt(t.group(2));
-            int min = t.group(3) == null ? 0 : Integer.parseInt(t.group(3));
-            String ap = t.group(1);
+        // 3) 시간: "오후4~6시" 같은 범위를 가장 먼저 찾음 → 시작시간 16:00
+        Matcher range = Pattern.compile("(오전|오후)?\\s*(\\d{1,2})\\s*(?:시)?\\s*[~～\\-]\\s*(\\d{1,2})\\s*시").matcher(clean);
+        if (range.find()) {
+            int h = Integer.parseInt(range.group(2));
+            String ap = range.group(1);
             if ("오후".equals(ap) && h < 12) h += 12;
             if ("오전".equals(ap) && h == 12) h = 0;
+            p.time = String.format(Locale.KOREA,"%02d:00",h);
+            return p;
+        }
+
+        // "오후 4시", "오전 10시 30분"
+        Matcher natural = Pattern.compile("(오전|오후)\\s*(\\d{1,2})\\s*시\\s*(\\d{1,2})?\\s*분?").matcher(clean);
+        if (natural.find()) {
+            int h = Integer.parseInt(natural.group(2));
+            int min = natural.group(3) == null ? 0 : Integer.parseInt(natural.group(3));
+            if ("오후".equals(natural.group(1)) && h < 12) h += 12;
+            if ("오전".equals(natural.group(1)) && h == 12) h = 0;
             p.time = String.format(Locale.KOREA,"%02d:%02d",h,min);
+            return p;
+        }
+
+        // 콜론 시간은 상태바/대화 전송시간 오인 방지를 위해 일정 키워드가 같은 줄에 있을 때만 사용
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (!(line.contains("일정") || line.contains("게임") || line.contains("경기") ||
+                  line.contains("훈련") || line.contains("레슨") || line.contains("예약") ||
+                  line.contains("병원") || line.contains("진료") || line.contains("방문") ||
+                  line.contains("상담") || line.contains("미팅") || line.contains("면접"))) continue;
+            Matcher clock = Pattern.compile("(오전|오후)?\\s*(\\d{1,2}):(\\d{2})").matcher(line);
+            if (clock.find()) {
+                int h = Integer.parseInt(clock.group(2));
+                int min = Integer.parseInt(clock.group(3));
+                String ap = clock.group(1);
+                if ("오후".equals(ap) && h < 12) h += 12;
+                if ("오전".equals(ap) && h == 12) h = 0;
+                p.time = String.format(Locale.KOREA,"%02d:%02d",h,min);
+                break;
+            }
         }
 
         return p;
     }
 
+    private boolean isNoiseLine(String line) {
+        if (line == null || line.isEmpty()) return true;
+        if (line.matches("^KT\\b.*")) return true;
+        if (line.matches(".*\\b(TALK|LTE|5G|HD)\\b.*")) return true;
+        if (line.matches("^\\d{1,2}:\\d{2}.*$")) return true;
+        if (line.matches("^(오전|오후)?\\s*\\d{1,2}:\\d{2}$")) return true;
+        if (line.matches("^\\d{4}년\\s*\\d{1,2}월\\s*\\d{1,2}일.*$")) return true;
+        if (line.matches("^[가-힣]{2,4}$")) return true; // 사람 이름만 있는 줄
+        if (line.equals("메시지 입력")) return true;
+        return false;
+    }
+
     private void scheduleReminder(JSONObject e) {
-        int minBefore = e.optInt("reminderMin",0);
+        int minBefore = e.optInt("reminderMin",60);
         if (minBefore <= 0) return;
 
         try {
@@ -491,7 +556,7 @@ public class MainActivity extends Activity {
             AlarmManager am = (AlarmManager)getSystemService(ALARM_SERVICE);
             Intent i = new Intent(this, ReminderReceiver.class);
             i.putExtra("title", e.optString("title","일정 알림"));
-            i.putExtra("text", date + " " + time + " 일정이 곧 시작됩니다.");
+            i.putExtra("text", "1시간 후 일정이 시작됩니다 · " + date + " " + time);
             int requestCode = Math.abs(e.optString("id").hashCode());
 
             PendingIntent pi = PendingIntent.getBroadcast(
@@ -505,6 +570,26 @@ public class MainActivity extends Activity {
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
             }
         } catch(Exception ignored) {}
+    }
+
+    private void migrateAndScheduleExistingEvents() {
+        boolean changed = false;
+        for (int i=0; i<events.length(); i++) {
+            JSONObject e = events.optJSONObject(i);
+            if (e == null) continue;
+            try {
+                if (!e.has("reminderMin") || e.optInt("reminderMin",0) == 0) {
+                    e.put("reminderMin",60);
+                    changed = true;
+                }
+                if (e.optString("id").isEmpty()) {
+                    e.put("id", UUID.randomUUID().toString());
+                    changed = true;
+                }
+                scheduleReminder(e);
+            } catch(Exception ignored) {}
+        }
+        if (changed) saveEvents();
     }
 
     private String copyImage(Uri uri) {
@@ -529,14 +614,6 @@ public class MainActivity extends Activity {
         String s = getSharedPreferences(PREFS,MODE_PRIVATE).getString(KEY,"[]");
         try { events = new JSONArray(s); }
         catch(Exception e) { events = new JSONArray(); }
-
-        for(int i=0;i<events.length();i++) {
-            JSONObject e = events.optJSONObject(i);
-            if (e != null && e.optString("id").isEmpty()) {
-                try { e.put("id", UUID.randomUUID().toString()); }
-                catch(Exception ignored) {}
-            }
-        }
     }
 
     private void saveEvents() {
