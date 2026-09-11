@@ -23,10 +23,12 @@ import java.util.*;
 import java.util.regex.*;
 
 public class MainActivity extends Activity {
-    private CalendarView calendarView;
     private LinearLayout eventList;
     private TextView selectedTitle;
+    private TextView monthTitle;
+    private LinearLayout calendarDaysGrid;
     private Calendar selected = Calendar.getInstance();
+    private Calendar displayMonth = Calendar.getInstance();
     private JSONArray events = new JSONArray();
 
     private final String PREFS = "schedule_prefs_v2";
@@ -54,6 +56,13 @@ public class MainActivity extends Activity {
         return (int)(x * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private int getBottomSafePadding() {
+        int id = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+        int nav = id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+        return dp(12) + nav;
+    }
+
+
     private TextView tv(String text, int sp, boolean bold) {
         TextView v = new TextView(this);
         v.setText(text);
@@ -71,33 +80,198 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean sameDay(Calendar a, Calendar b) {
+        return a.get(Calendar.YEAR) == b.get(Calendar.YEAR)
+            && a.get(Calendar.MONTH) == b.get(Calendar.MONTH)
+            && a.get(Calendar.DAY_OF_MONTH) == b.get(Calendar.DAY_OF_MONTH);
+    }
+
+    private void shiftMonth(int delta) {
+        displayMonth.add(Calendar.MONTH, delta);
+        int maxDay = displayMonth.getActualMaximum(Calendar.DAY_OF_MONTH);
+        int keepDay = Math.min(selected.get(Calendar.DAY_OF_MONTH), maxDay);
+        selected.set(displayMonth.get(Calendar.YEAR), displayMonth.get(Calendar.MONTH), keepDay, 0, 0, 0);
+        refresh();
+    }
+
+    private TextView makeNavButton(String text) {
+        TextView v = tv(text, 22, true);
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(dp(8), dp(4), dp(8), dp(4));
+        return v;
+    }
+
+    private LinearLayout.LayoutParams weekCellParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        lp.setMargins(dp(2), dp(2), dp(2), dp(2));
+        return lp;
+    }
+
+    private boolean hasEventOn(Calendar c) {
+        String dateKey = key(c);
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject e = events.optJSONObject(i);
+            if (e != null && dateKey.equals(e.optString("date"))) return true;
+        }
+        return false;
+    }
+
+    private android.graphics.drawable.GradientDrawable roundedBg(int fillColor, int strokeColor, int strokeWidthDp, int radiusDp) {
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(fillColor);
+        bg.setCornerRadius(dp(radiusDp));
+        if (strokeWidthDp > 0) bg.setStroke(dp(strokeWidthDp), strokeColor);
+        return bg;
+    }
+
+    private void styleMonthNav(TextView v) {
+        v.setTextSize(22);
+        v.setTextColor(Color.rgb(60, 64, 72));
+        v.setBackground(roundedBg(Color.rgb(239, 241, 247), Color.TRANSPARENT, 0, 18));
+        v.setPadding(dp(10), dp(4), dp(10), dp(4));
+    }
+
+    private void renderCalendar() {
+        if (monthTitle == null || calendarDaysGrid == null) return;
+
+        monthTitle.setText(new SimpleDateFormat("yyyy년 M월", Locale.KOREA).format(displayMonth.getTime()));
+        calendarDaysGrid.removeAllViews();
+
+        Calendar today = Calendar.getInstance();
+        Calendar first = (Calendar) displayMonth.clone();
+        first.set(Calendar.DAY_OF_MONTH, 1);
+        int offset = first.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY;
+        Calendar cursor = (Calendar) first.clone();
+        cursor.add(Calendar.DAY_OF_MONTH, -offset);
+
+        for (int week = 0; week < 6; week++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+
+            for (int day = 0; day < 7; day++) {
+                final Calendar cellDate = (Calendar) cursor.clone();
+                boolean inMonth = cellDate.get(Calendar.YEAR) == displayMonth.get(Calendar.YEAR)
+                        && cellDate.get(Calendar.MONTH) == displayMonth.get(Calendar.MONTH);
+                int dow = cellDate.get(Calendar.DAY_OF_WEEK);
+                boolean isSelected = sameDay(cellDate, selected);
+                boolean isToday = sameDay(cellDate, today);
+                boolean hasEvent = inMonth && hasEventOn(cellDate);
+
+                LinearLayout cellBox = new LinearLayout(this);
+                cellBox.setOrientation(LinearLayout.VERTICAL);
+                cellBox.setGravity(Gravity.CENTER);
+                cellBox.setPadding(dp(1), dp(2), dp(1), dp(1));
+
+                TextView dayText = new TextView(this);
+                dayText.setText(String.valueOf(cellDate.get(Calendar.DAY_OF_MONTH)));
+                dayText.setGravity(Gravity.CENTER);
+                dayText.setTextSize(16);
+
+                if (!inMonth) {
+                    dayText.setTextColor(Color.LTGRAY);
+                } else if (isSelected) {
+                    dayText.setTextColor(Color.WHITE);
+                    dayText.setTypeface(null, Typeface.BOLD);
+                } else if (dow == Calendar.SUNDAY) {
+                    dayText.setTextColor(Color.rgb(220, 38, 38));
+                } else if (dow == Calendar.SATURDAY) {
+                    dayText.setTextColor(Color.rgb(37, 99, 235));
+                } else {
+                    dayText.setTextColor(Color.rgb(24, 27, 34));
+                }
+
+                TextView dot = new TextView(this);
+                dot.setText(hasEvent ? "●" : "");
+                dot.setGravity(Gravity.CENTER);
+                dot.setTextSize(8);
+                dot.setTextColor(isSelected ? Color.WHITE : Color.rgb(88, 101, 242));
+
+                cellBox.addView(dayText, new LinearLayout.LayoutParams(-1, 0, 1f));
+                cellBox.addView(dot, new LinearLayout.LayoutParams(-1, dp(10)));
+
+                if (isSelected) {
+                    cellBox.setBackground(roundedBg(Color.rgb(88, 101, 242), Color.TRANSPARENT, 0, 18));
+                } else if (isToday && inMonth) {
+                    cellBox.setBackground(roundedBg(Color.TRANSPARENT, Color.rgb(88, 101, 242), 1, 18));
+                } else {
+                    cellBox.setBackgroundColor(Color.TRANSPARENT);
+                }
+
+                cellBox.setOnClickListener(v -> {
+                    selected.set(cellDate.get(Calendar.YEAR), cellDate.get(Calendar.MONTH), cellDate.get(Calendar.DAY_OF_MONTH), 0, 0, 0);
+                    displayMonth.set(cellDate.get(Calendar.YEAR), cellDate.get(Calendar.MONTH), 1, 0, 0, 0);
+                    refresh();
+                });
+
+                row.addView(cellBox, weekCellParams());
+                cursor.add(Calendar.DAY_OF_MONTH, 1);
+            }
+
+            calendarDaysGrid.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        }
+    }
+
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(18), dp(16), dp(16));
+        root.setPadding(dp(16), dp(14), dp(16), getBottomSafePadding());
         root.setBackgroundColor(Color.rgb(247,248,252));
 
-        TextView title = tv("나만의 일정", 28, true);
+        TextView title = tv("나만의 일정", 24, true);
         root.addView(title);
 
-        TextView sub = tv("카카오톡·문자 메시지·스크린샷을 일정으로 바로 저장 · 기본 1시간 전 알림", 14, false);
+        TextView sub = tv("카카오톡·문자 메시지·스크린샷을 일정으로 바로 저장 · 기본 1시간 전 알림", 13, false);
         sub.setTextColor(Color.GRAY);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1,-2);
-        sp.setMargins(0, dp(5),0,dp(12));
+        sp.setMargins(0, dp(4),0,dp(10));
         root.addView(sub, sp);
 
-        calendarView = new CalendarView(this);
-        calendarView.setFirstDayOfWeek(Calendar.MONDAY);
-        calendarView.setDate(selected.getTimeInMillis(), false, true);
-        calendarView.setOnDateChangeListener((view, y, m, d) -> {
-            selected.set(y,m,d,0,0,0);
-            refresh();
-        });
-        root.addView(calendarView, new LinearLayout.LayoutParams(-1, dp(300)));
+        LinearLayout calBox = new LinearLayout(this);
+        calBox.setOrientation(LinearLayout.VERTICAL);
+        calBox.setPadding(dp(8), dp(8), dp(8), dp(8));
 
-        selectedTitle = tv("", 20, true);
+        LinearLayout nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView prev = makeNavButton("‹");
+        styleMonthNav(prev);
+        prev.setOnClickListener(v -> shiftMonth(-1));
+        monthTitle = tv("", 18, true);
+        monthTitle.setGravity(Gravity.CENTER);
+        TextView next = makeNavButton("›");
+        styleMonthNav(next);
+        next.setOnClickListener(v -> shiftMonth(1));
+
+        nav.addView(prev, new LinearLayout.LayoutParams(0, -2, 1f));
+        nav.addView(monthTitle, new LinearLayout.LayoutParams(0, -2, 5f));
+        nav.addView(next, new LinearLayout.LayoutParams(0, -2, 1f));
+        calBox.addView(nav);
+
+        LinearLayout weekHeader = new LinearLayout(this);
+        weekHeader.setOrientation(LinearLayout.HORIZONTAL);
+        String[] weeks = {"일","월","화","수","목","금","토"};
+        for (int i = 0; i < weeks.length; i++) {
+            TextView w = tv(weeks[i], 14, false);
+            w.setGravity(Gravity.CENTER);
+            if (i == 0) w.setTextColor(Color.rgb(220, 38, 38));
+            else if (i == 6) w.setTextColor(Color.rgb(37, 99, 235));
+            else w.setTextColor(Color.GRAY);
+            weekHeader.addView(w, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        LinearLayout.LayoutParams whp = new LinearLayout.LayoutParams(-1, -2);
+        whp.setMargins(0, dp(6), 0, dp(4));
+        calBox.addView(weekHeader, whp);
+
+        calendarDaysGrid = new LinearLayout(this);
+        calendarDaysGrid.setOrientation(LinearLayout.VERTICAL);
+        calBox.addView(calendarDaysGrid, new LinearLayout.LayoutParams(-1, -2));
+
+        root.addView(calBox, new LinearLayout.LayoutParams(-1, -2));
+
+        selectedTitle = tv("", 18, true);
         LinearLayout.LayoutParams stp = new LinearLayout.LayoutParams(-1,-2);
-        stp.setMargins(0, dp(14),0,dp(8));
+        stp.setMargins(0, dp(12),0,dp(8));
         root.addView(selectedTitle, stp);
 
         ScrollView scroll = new ScrollView(this);
@@ -108,10 +282,14 @@ public class MainActivity extends Activity {
 
         Button add = new Button(this);
         add.setText("＋ 일정 추가");
-        add.setTextSize(16);
+        add.setTextSize(15);
+        add.setMinimumHeight(dp(48));
         add.setOnClickListener(v -> openEditor(null, "", new ArrayList<>(), false));
-        root.addView(add);
+        LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(-1, -2);
+        addLp.setMargins(0, dp(8), 0, dp(6));
+        root.addView(add, addLp);
 
+        displayMonth.set(selected.get(Calendar.YEAR), selected.get(Calendar.MONTH), 1, 0, 0, 0);
         setContentView(root);
         refresh();
     }
@@ -125,6 +303,7 @@ public class MainActivity extends Activity {
     }
 
     private void refresh() {
+        renderCalendar();
         selectedTitle.setText(niceDate(selected));
         eventList.removeAllViews();
         boolean any = false;
