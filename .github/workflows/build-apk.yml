@@ -27,8 +27,9 @@ jobs:
 
       - name: Prepare Android project
         run: |
-        echo "android.useAndroidX=true">
-        gradle.properties
+echo "android.useAndroidX=true">
+gradle.properties
+
           mkdir -p app/src/main/java/com/coolmassaru/myschedule
           mkdir -p app/src/main/res/values
 
