@@ -496,7 +496,7 @@ public class MainActivity extends Activity {
                     else events.put(e);
 
                     selected = (Calendar) editDate.clone();
-                    calendarView.setDate(selected.getTimeInMillis(), false, true);
+                    displayMonth.set(selected.get(Calendar.YEAR), selected.get(Calendar.MONTH), 1, 0, 0, 0);
                     saveEvents();
                     scheduleReminder(e);
                     refresh();
