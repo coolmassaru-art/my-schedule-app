@@ -460,6 +460,14 @@ public class MainActivity extends Activity {
                 dateBtn.setText("날짜: " + key(editDate));
             }
 
+            if (incomingText.contains("남성성인반") || incomingText.contains("성인 남녀") ||
+                incomingText.contains("풋볼") || incomingText.contains("축구") ||
+                incomingText.contains("PT") || incomingText.contains("피티")) {
+                for (int i=0; i<CATS.length; i++) {
+                    if ("운동".equals(CATS[i])) category.setSelection(i);
+                }
+            }
+
             if (incomingText.trim().isEmpty() && images.size() > 0) {
                 title.setText("카카오톡 스크린샷 일정");
             }
@@ -546,7 +554,7 @@ public class MainActivity extends Activity {
             if (type.startsWith("text/")) {
                 String text = intent.getStringExtra(Intent.EXTRA_TEXT);
                 if (text == null) text = "";
-                openEditor(null, text, new ArrayList<>(), false);
+                processRecognizedText(text, new ArrayList<>());
             } else if (type.startsWith("image/")) {
                 Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
                 if (uri != null) {
@@ -571,15 +579,41 @@ public class MainActivity extends Activity {
     }
 
     private void runOcrAndOpen(Uri uri, ArrayList<String> imgs) {
+        TextRecognizer recognizer = TextRecognition.getClient(
+            new KoreanTextRecognizerOptions.Builder().build()
+        );
+
+        try {
+            Bitmap source = decodeBitmap(uri);
+            Bitmap selectedGreen = source == null ? null : findGreenSelectedCard(source);
+
+            // 풋볼존처럼 "녹색 카드 = 내가 신청한 일정" 화면은
+            // 녹색 카드 영역만 OCR해서 다른 후보 일정은 무시합니다.
+            if (selectedGreen != null) {
+                InputImage selectedImage = InputImage.fromBitmap(selectedGreen, 0);
+                recognizer.process(selectedImage)
+                    .addOnSuccessListener(result -> {
+                        String text = result.getText();
+                        processRecognizedText(text == null ? "" : text, imgs);
+                        recognizer.close();
+                    })
+                    .addOnFailureListener(e -> runFullImageOcr(uri, imgs, recognizer));
+                return;
+            }
+
+            runFullImageOcr(uri, imgs, recognizer);
+        } catch(Exception e) {
+            runFullImageOcr(uri, imgs, recognizer);
+        }
+    }
+
+    private void runFullImageOcr(Uri uri, ArrayList<String> imgs, TextRecognizer recognizer) {
         try {
             InputImage image = InputImage.fromFilePath(this, uri);
-            TextRecognizer recognizer = TextRecognition.getClient(
-                new KoreanTextRecognizerOptions.Builder().build()
-            );
             recognizer.process(image)
                 .addOnSuccessListener(result -> {
                     String text = result.getText();
-                    openEditor(null, text == null ? "" : text, imgs, false);
+                    processRecognizedText(text == null ? "" : text, imgs);
                     recognizer.close();
                 })
                 .addOnFailureListener(e -> {
@@ -588,7 +622,295 @@ public class MainActivity extends Activity {
                 });
         } catch(Exception e) {
             openEditor(null, "", imgs, false);
+            recognizer.close();
         }
+    }
+
+    private Bitmap decodeBitmap(Uri uri) {
+        try {
+            InputStream in = getContentResolver().openInputStream(uri);
+            Bitmap bmp = BitmapFactory.decodeStream(in);
+            if (in != null) in.close();
+            return bmp;
+        } catch(Exception e) {
+            return null;
+        }
+    }
+
+    // 화면에서 초록색 테두리/배경이 큰 카드 하나를 찾아 잘라냅니다.
+    // 작은 초록 아이콘이나 글씨는 최소 면적 조건으로 제외합니다.
+    private Bitmap findGreenSelectedCard(Bitmap bmp) {
+        if (bmp == null) return null;
+
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        if (w < 100 || h < 100) return null;
+
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        int greenPixels = 0;
+
+        // 속도 때문에 2픽셀 간격으로 검사
+        for (int y = 0; y < h; y += 2) {
+            for (int x = 0; x < w; x += 2) {
+                int c = bmp.getPixel(x, y);
+                int r = Color.red(c);
+                int g = Color.green(c);
+                int b = Color.blue(c);
+
+                // 풋볼존 선택 카드의 연녹색 배경 + 진녹색 테두리를 함께 감지
+                boolean paleGreen = g >= r + 8 && g >= b + 4 && g > 150 && r > 170;
+                boolean borderGreen = g >= r + 25 && g >= b + 15 && g > 100 && r < 190;
+
+                if (paleGreen || borderGreen) {
+                    greenPixels++;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+
+        if (greenPixels < 300 || maxX <= minX || maxY <= minY) return null;
+
+        int boxW = maxX - minX;
+        int boxH = maxY - minY;
+
+        // 실제 일정 카드처럼 충분히 큰 녹색 영역일 때만 사용
+        if (boxW < w * 0.45 || boxH < dp(90)) return null;
+
+        int padX = Math.max(10, w / 40);
+        int padY = Math.max(10, h / 100);
+
+        int left = Math.max(0, minX - padX);
+        int top = Math.max(0, minY - padY);
+        int right = Math.min(w, maxX + padX);
+        int bottom = Math.min(h, maxY + padY);
+
+        try {
+            return Bitmap.createBitmap(bmp, left, top, right - left, bottom - top);
+        } catch(Exception e) {
+            return null;
+        }
+    }
+
+    private void processRecognizedText(String text, ArrayList<String> imgs) {
+        ArrayList<ParsedSchedule> multiple = parseMultipleSchedules(text);
+        if (multiple.size() >= 2) {
+            openMultiScheduleDialog(multiple, text, imgs);
+        } else {
+            openEditor(null, text, imgs, false);
+        }
+    }
+
+    private void openMultiScheduleDialog(ArrayList<ParsedSchedule> schedules,
+                                         String sourceText,
+                                         ArrayList<String> imgs) {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(12), dp(6), dp(12), dp(6));
+
+        ArrayList<CheckBox> checks = new ArrayList<>();
+
+        for (ParsedSchedule p : schedules) {
+            CheckBox cb = new CheckBox(this);
+            cb.setChecked(true);
+
+            Calendar c = Calendar.getInstance();
+            if (p.date != null) c.setTime(p.date);
+
+            String date = new SimpleDateFormat("M월 d일 E요일", Locale.KOREA).format(c.getTime());
+            String label = date + "  " + p.time + "\n" + p.title;
+            if (!p.endTime.isEmpty()) label += "  (" + p.time + "~" + p.endTime + ")";
+
+            cb.setText(label);
+            cb.setTextSize(15);
+            cb.setPadding(dp(4), dp(8), dp(4), dp(8));
+            list.addView(cb);
+            checks.add(cb);
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+
+        new AlertDialog.Builder(this)
+            .setTitle("여러 일정을 찾았습니다")
+            .setMessage("등록할 일정만 체크하세요. 모두 기본 1시간 전 알림으로 저장됩니다.")
+            .setView(scroll)
+            .setNegativeButton("취소", null)
+            .setPositiveButton("선택 일정 저장", (d,w) -> {
+                Calendar firstSaved = null;
+
+                for (int i=0; i<schedules.size(); i++) {
+                    if (!checks.get(i).isChecked()) continue;
+                    ParsedSchedule p = schedules.get(i);
+
+                    try {
+                        Calendar c = Calendar.getInstance();
+                        if (p.date != null) c.setTime(p.date);
+
+                        JSONObject e = new JSONObject();
+                        e.put("id", UUID.randomUUID().toString());
+                        e.put("title", p.title.isEmpty() ? "일정" : p.title);
+                        e.put("date", key(c));
+                        e.put("time", p.time);
+                        e.put("category", isExerciseSchedule(p.title, sourceText) ? "운동" : "개인");
+
+                        String memoText = p.cleanMemo;
+                        if (memoText == null || memoText.trim().isEmpty()) {
+                            memoText = "스크린샷/메시지에서 자동 인식";
+                        }
+                        if (!p.endTime.isEmpty() && !memoText.contains("시간:")) {
+                            memoText = "시간: " + p.time + " ~ " + p.endTime + "\n" + memoText;
+                        }
+                        e.put("memo", memoText.trim());
+                        e.put("reminderMin", 60);
+
+                        JSONArray ja = new JSONArray();
+                        for (String s : imgs) ja.put(s);
+                        e.put("images", ja);
+
+                        events.put(e);
+                        scheduleReminder(e);
+
+                        if (firstSaved == null) firstSaved = (Calendar)c.clone();
+                    } catch(Exception ignored) {}
+                }
+
+                saveEvents();
+
+                if (firstSaved != null) {
+                    selected = firstSaved;
+                    displayMonth.set(selected.get(Calendar.YEAR), selected.get(Calendar.MONTH), 1, 0, 0, 0);
+                }
+                refresh();
+            })
+            .show();
+    }
+
+    private boolean isExerciseSchedule(String title, String sourceText) {
+        String s = (title == null ? "" : title) + " " + (sourceText == null ? "" : sourceText);
+        return s.contains("PT") || s.contains("H.Balance") || s.contains("운동") ||
+               s.contains("축구") || s.contains("풋볼") || s.contains("레슨");
+    }
+
+    private ArrayList<ParsedSchedule> parseMultipleSchedules(String text) {
+        ArrayList<ParsedSchedule> out = new ArrayList<>();
+        if (text == null) return out;
+
+        String clean = text.replace('\u00A0',' ').replaceAll("[\\r\\t]+", " ").trim();
+
+        // 현재 사용 사례: "다음 주 ... 화요일 오후 4시 / 목요일 오후 3시"
+        Pattern weekdayTime = Pattern.compile(
+            "(월|화|수|목|금|토|일)요일\\s*(오전|오후)?\\s*(\\d{1,2})\\s*시(?:\\s*(\\d{1,2})\\s*분)?"
+        );
+        Matcher m = weekdayTime.matcher(clean);
+
+        ArrayList<String[]> found = new ArrayList<>();
+        int firstMatchPos = -1;
+        while (m.find()) {
+            if (firstMatchPos < 0) firstMatchPos = m.start();
+            found.add(new String[]{
+                m.group(1), m.group(2), m.group(3), m.group(4)
+            });
+        }
+
+        if (found.size() < 2) return out;
+
+        Calendar reference = findReferenceDateBefore(clean, firstMatchPos);
+        boolean nextWeek = clean.substring(0, Math.max(0, firstMatchPos)).contains("다음 주")
+                        || clean.substring(0, Math.max(0, firstMatchPos)).contains("다음주");
+        boolean thisWeek = clean.substring(0, Math.max(0, firstMatchPos)).contains("이번 주")
+                        || clean.substring(0, Math.max(0, firstMatchPos)).contains("이번주");
+
+        String title;
+        if (clean.toLowerCase(Locale.KOREA).contains("h.balance")) {
+            title = "PT - H.Balance";
+        } else if (clean.contains("PT") || clean.contains("피티")) {
+            title = "PT 수업";
+        } else if (clean.contains("축구") || clean.contains("풋볼")) {
+            title = "축구 레슨";
+        } else if (clean.contains("운동")) {
+            title = "운동";
+        } else {
+            title = "일정";
+        }
+
+        for (String[] f : found) {
+            int targetDow = koreanWeekdayToCalendar(f[0]);
+            Calendar date = resolveWeekday(reference, targetDow, nextWeek, thisWeek);
+
+            int h = Integer.parseInt(f[2]);
+            int min = f[3] == null ? 0 : Integer.parseInt(f[3]);
+            if ("오후".equals(f[1]) && h < 12) h += 12;
+            if ("오전".equals(f[1]) && h == 12) h = 0;
+
+            ParsedSchedule p = new ParsedSchedule();
+            p.title = title;
+            p.time = String.format(Locale.KOREA, "%02d:%02d", h, min);
+            p.date = date.getTime();
+            p.cleanMemo = "스크린샷/메시지에서 자동 인식";
+            out.add(p);
+        }
+
+        return out;
+    }
+
+    private Calendar findReferenceDateBefore(String text, int beforePos) {
+        Calendar reference = Calendar.getInstance();
+        if (beforePos <= 0) return reference;
+
+        String prefix = text.substring(0, Math.min(beforePos, text.length()));
+        Matcher full = Pattern.compile("(20\\d{2})\\s*년\\s*(\\d{1,2})\\s*월\\s*(\\d{1,2})\\s*일").matcher(prefix);
+
+        int y = -1, mo = -1, d = -1;
+        while (full.find()) {
+            y = Integer.parseInt(full.group(1));
+            mo = Integer.parseInt(full.group(2));
+            d = Integer.parseInt(full.group(3));
+        }
+
+        if (y > 0) {
+            reference.set(y, mo - 1, d, 0, 0, 0);
+            reference.set(Calendar.MILLISECOND, 0);
+        }
+        return reference;
+    }
+
+    private int koreanWeekdayToCalendar(String day) {
+        if ("일".equals(day)) return Calendar.SUNDAY;
+        if ("월".equals(day)) return Calendar.MONDAY;
+        if ("화".equals(day)) return Calendar.TUESDAY;
+        if ("수".equals(day)) return Calendar.WEDNESDAY;
+        if ("목".equals(day)) return Calendar.THURSDAY;
+        if ("금".equals(day)) return Calendar.FRIDAY;
+        return Calendar.SATURDAY;
+    }
+
+    private Calendar resolveWeekday(Calendar reference, int targetDow,
+                                    boolean nextWeek, boolean thisWeek) {
+        Calendar base = (Calendar) reference.clone();
+        base.set(Calendar.HOUR_OF_DAY, 0);
+        base.set(Calendar.MINUTE, 0);
+        base.set(Calendar.SECOND, 0);
+        base.set(Calendar.MILLISECOND, 0);
+
+        // 해당 주의 일요일
+        int dow = base.get(Calendar.DAY_OF_WEEK);
+        base.add(Calendar.DAY_OF_MONTH, -(dow - Calendar.SUNDAY));
+
+        if (nextWeek) {
+            base.add(Calendar.DAY_OF_MONTH, 7);
+        }
+
+        Calendar target = (Calendar) base.clone();
+        target.add(Calendar.DAY_OF_MONTH, targetDow - Calendar.SUNDAY);
+
+        // "이번 주/다음 주" 표현이 없으면 기준일 이후 가장 가까운 같은 요일
+        if (!nextWeek && !thisWeek && target.before(reference)) {
+            target.add(Calendar.DAY_OF_MONTH, 7);
+        }
+        return target;
     }
 
     static class ParsedSchedule {
@@ -635,6 +957,12 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        if (clean.toLowerCase(Locale.KOREA).contains("h.balance")) {
+            p.title = "PT - H.Balance";
+        } else if (clean.contains("남성성인반") || clean.contains("성인 남녀") ||
+            clean.contains("풋볼") || clean.contains("축구")) {
+            p.title = "축구 레슨";
+        }
         if (p.title.isEmpty()) p.title = "메시지 일정";
 
         // 2) 날짜: 9/12(토), 9/12, 9-12, 9.12, 9월 12일, 내일/모레
@@ -672,7 +1000,17 @@ public class MainActivity extends Activity {
             }
         }
 
-        // 3) 시간: "오후4~6시" 같은 범위를 가장 먼저 찾음 → 시작시간 16:00
+        // 3) 시간: "20:00~21:30" 또는 "오후4~6시" 같은 범위를 인식
+        Matcher colonRange = Pattern.compile("(?<!\\d)(\\d{1,2}):(\\d{2})\\s*[~～\\-]\\s*(\\d{1,2}):(\\d{2})(?!\\d)").matcher(clean);
+        if (colonRange.find()) {
+            int sh = Integer.parseInt(colonRange.group(1));
+            int sm = Integer.parseInt(colonRange.group(2));
+            int eh = Integer.parseInt(colonRange.group(3));
+            int em = Integer.parseInt(colonRange.group(4));
+            p.time = String.format(Locale.KOREA,"%02d:%02d",sh,sm);
+            p.endTime = String.format(Locale.KOREA,"%02d:%02d",eh,em);
+        }
+
         Matcher range = Pattern.compile("(오전|오후)?\\s*(\\d{1,2})\\s*(?:시)?\\s*[~～\\-]\\s*(\\d{1,2})\\s*시").matcher(clean);
         if (range.find()) {
             int h = Integer.parseInt(range.group(2));
