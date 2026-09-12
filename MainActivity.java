@@ -800,28 +800,43 @@ public class MainActivity extends Activity {
 
         String clean = text.replace('\u00A0',' ').replaceAll("[\\r\\t]+", " ").trim();
 
-        // 현재 사용 사례: "다음 주 ... 화요일 오후 4시 / 목요일 오후 3시"
+        int firstMatchPos = -1;
+
+        // A. "화요일 오후 4시", "목요일 오후 3시" 형태
         Pattern weekdayTime = Pattern.compile(
             "(월|화|수|목|금|토|일)요일\\s*(오전|오후)?\\s*(\\d{1,2})\\s*시(?:\\s*(\\d{1,2})\\s*분)?"
         );
         Matcher m = weekdayTime.matcher(clean);
 
         ArrayList<String[]> found = new ArrayList<>();
-        int firstMatchPos = -1;
         while (m.find()) {
             if (firstMatchPos < 0) firstMatchPos = m.start();
-            found.add(new String[]{
-                m.group(1), m.group(2), m.group(3), m.group(4)
-            });
+            found.add(new String[]{m.group(1), m.group(2), m.group(3), m.group(4)});
+        }
+
+        // B. "[수/금] 오후 4시", "수/금 오후 4시" 형태
+        if (found.isEmpty()) {
+            Pattern groupedDays = Pattern.compile(
+                "\\[?\\s*([월화수목금토일](?:\\s*/\\s*[월화수목금토일])+?)\\s*\\]?\\s*" +
+                "(오전|오후)?\\s*(\\d{1,2})\\s*시(?:\\s*(\\d{1,2})\\s*분)?"
+            );
+            Matcher gm = groupedDays.matcher(clean);
+            if (gm.find()) {
+                firstMatchPos = gm.start();
+                String[] days = gm.group(1).replaceAll("\\s+", "").split("/");
+                for (String day : days) {
+                    found.add(new String[]{day, gm.group(2), gm.group(3), gm.group(4)});
+                }
+            }
         }
 
         if (found.size() < 2) return out;
 
         Calendar reference = findReferenceDateBefore(clean, firstMatchPos);
-        boolean nextWeek = clean.substring(0, Math.max(0, firstMatchPos)).contains("다음 주")
-                        || clean.substring(0, Math.max(0, firstMatchPos)).contains("다음주");
-        boolean thisWeek = clean.substring(0, Math.max(0, firstMatchPos)).contains("이번 주")
-                        || clean.substring(0, Math.max(0, firstMatchPos)).contains("이번주");
+
+        String prefix = firstMatchPos > 0 ? clean.substring(0, firstMatchPos) : clean;
+        boolean nextWeek = prefix.contains("다음 주") || prefix.contains("다음주");
+        boolean thisWeek = prefix.contains("이번 주") || prefix.contains("이번주");
 
         String title;
         if (clean.toLowerCase(Locale.KOREA).contains("h.balance")) {
@@ -862,12 +877,18 @@ public class MainActivity extends Activity {
 
         String prefix = text.substring(0, Math.min(beforePos, text.length()));
         Matcher full = Pattern.compile("(20\\d{2})\\s*년\\s*(\\d{1,2})\\s*월\\s*(\\d{1,2})\\s*일").matcher(prefix);
+        Matcher dotted = Pattern.compile("(20\\d{2})\\s*[./-]\\s*(\\d{1,2})\\s*[./-]\\s*(\\d{1,2})").matcher(prefix);
 
         int y = -1, mo = -1, d = -1;
         while (full.find()) {
             y = Integer.parseInt(full.group(1));
             mo = Integer.parseInt(full.group(2));
             d = Integer.parseInt(full.group(3));
+        }
+        while (dotted.find()) {
+            y = Integer.parseInt(dotted.group(1));
+            mo = Integer.parseInt(dotted.group(2));
+            d = Integer.parseInt(dotted.group(3));
         }
 
         if (y > 0) {
