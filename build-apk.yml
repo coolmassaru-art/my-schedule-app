@@ -1,0 +1,81 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Prepare Android project
+        run: |
+          echo "android.useAndroidX=true" > gradle.properties
+
+          mkdir -p app/src/main/java/com/coolmassaru/myschedule
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/drawable
+
+          cp AndroidManifest.xml app/src/main/AndroidManifest.xml
+          cp MainActivity.java app/src/main/java/com/coolmassaru/myschedule/MainActivity.java
+          cp ReminderReceiver.java app/src/main/java/com/coolmassaru/myschedule/ReminderReceiver.java
+          cp ScheduleWidgetProvider.java app/src/main/java/com/coolmassaru/myschedule/ScheduleWidgetProvider.java
+
+          cp strings.xml app/src/main/res/values/strings.xml
+          cp themes.xml app/src/main/res/values/themes.xml
+          cp widget_schedule.xml app/src/main/res/layout/widget_schedule.xml
+          cp schedule_widget_info.xml app/src/main/res/xml/schedule_widget_info.xml
+          cp widget_bg.xml app/src/main/res/drawable/widget_bg.xml
+
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+
+          cat > app/build.gradle <<EOF
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.coolmassaru.myschedule'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId "com.coolmassaru.myschedule"
+                  minSdk 24
+                  targetSdk 35
+                  versionCode ${VERSION_CODE}
+                  versionName "2.${GITHUB_RUN_NUMBER}"
+              }
+          }
+
+          dependencies {
+              implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-schedule-app-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
