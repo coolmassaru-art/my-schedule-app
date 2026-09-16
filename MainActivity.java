@@ -2,6 +2,7 @@ package com.coolmassaru.myschedule;
 
 import android.*;
 import android.app.*;
+import android.appwidget.AppWidgetManager;
 import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.*;
@@ -1209,5 +1210,18 @@ public class MainActivity extends Activity {
     private void saveEvents() {
         getSharedPreferences(PREFS,MODE_PRIVATE)
             .edit().putString(KEY,events.toString()).apply();
+        updateHomeWidgets();
+    }
+
+    private void updateHomeWidgets() {
+        try {
+            Intent intent = new Intent(this, ScheduleWidgetProvider.class);
+            intent.setAction(AppWidgetManager.ACTION_APPWIDGET_UPDATE);
+            AppWidgetManager manager = AppWidgetManager.getInstance(this);
+            ComponentName widget = new ComponentName(this, ScheduleWidgetProvider.class);
+            int[] ids = manager.getAppWidgetIds(widget);
+            intent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids);
+            sendBroadcast(intent);
+        } catch(Exception ignored) {}
     }
 }

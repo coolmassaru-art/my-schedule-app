@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">나만의 일정</string>
+    <string name="widget_description">오늘과 내일 일정을 홈 화면에서 확인합니다.</string>
 </resources>
